@@ -1,0 +1,487 @@
+---
+title: "Pathway analysis"
+subtitle: "Prime-seq analysis"
+author: "Data analysis: Paulo Jannig | Karolinska Institutet"
+date: "`r paste('Last update:', format(Sys.time(), '%B %d, %Y'))`"
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+    toc_depth: 3
+    number_sections: true
+    theme: spacelab
+    highlight: default
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+```{r}
+print(setwd(dirname(rstudioapi::getSourceEditorContext()$path)))
+```
+
+
+create output folder
+```{bash}
+mkdir -p ../02.results/pathways
+```
+
+```{r}
+# define variables ==========================================
+filename_prefix <- "" # leave empty if not necessary
+species <- "mouse" # mouse, human, pig, rat
+ensembl_version <- 102 # define ensembl release version
+
+file_formats <- list(
+  #"png",
+  "pdf"
+)
+
+# load libraries
+required_Packages_Install <- c("tidyverse",
+                               "msigdbr",
+                               "clusterProfiler",
+                               "pheatmap",
+                               "ggtext",
+                               "RColorBrewer",
+                               "scico",
+                               "writexl",
+                               "ggrepel",
+                               "ggvenn",
+                               "scales"
+                               )
+
+
+for(Package in required_Packages_Install){
+  if(!require(Package,character.only = TRUE)) { 
+    BiocManager::install(Package, dependencies=TRUE)
+  }
+  library(Package,character.only = TRUE)
+}
+
+# source custom functions
+source("load_functions.R") # source custom functions
+```
+
+# Import data
+
+## Metadata
+```{r}
+metadata <- readRDS("../01.metadata/metadata.Rds")
+colnames(metadata)
+metadata$sample
+unique(metadata$Group)
+```
+
+## Contrasts
+```{r}
+group1 <- levels(metadata$Group)[2]
+group_ref <- levels(metadata$Group)[1]
+
+
+contrast1_name <- paste0(group1,"_vs_",group_ref)
+contrast1_name
+
+```
+
+```{r}
+contrast1.df <- readRDS(paste0("../02.results/deseq2/deseq2_",
+                               contrast1_name,"_lfcShrink.RDS"))
+contrasts_list <- list(
+  contrast1.df
+)
+
+# Assign names to the list elements
+names(contrasts_list) <- c(contrast1_name)
+```
+
+
+# Pathway Analysis
+https://yulab-smu.top/biomedical-knowledge-mining-book/enrichment-overview.html
+
+## MSigDb
+**Molecular Signatures Database (MSigDB):**
+H: hallmark gene sets
+C1: positional gene sets
+C2: curated gene sets
+C3: motif gene sets
+C4: computational gene sets
+C5: GO gene sets
+C6: oncogenic signatures
+C7: immunologic signatures
+
+```{r}
+packageVersion("msigdbr")
+```
+
+Check signatures
+```{r}
+# msigdbr(species = species) %>%
+#   group_by(gs_cat) %>%
+#   summarise(gs_subcat_list = paste(unique(gs_subcat), collapse = ", "))
+
+msigdbr(species = species) %>%
+  group_by(gs_collection) %>%
+  summarise(gs_subcollection_list = paste(unique(gs_subcollection), collapse = ", "))
+
+
+```
+
+```{r}
+msigdb_HALLMARK <- msigdbr(
+  species = species,
+  collection = "H"
+) %>%
+  dplyr::select(
+    gs_name,
+    ensembl_gene
+  )
+
+msigdb_GOBP <- msigdbr(
+  species = species,
+  category = "C5",
+  subcategory = "BP"
+) %>%
+  dplyr::select(
+    gs_name,
+    ensembl_gene
+  )
+
+msigdb_GOMF <- msigdbr(
+  species = species,
+  category = "C5",
+  subcategory = "MF"
+) %>%
+  dplyr::select(
+    gs_name,
+    ensembl_gene
+  )
+
+msigdb_GOCC <- msigdbr(
+  species = species,
+  category = "C5",
+  subcategory = "CC"
+) %>%
+  dplyr::select(
+    gs_name,
+    ensembl_gene
+  )
+
+msig_MitoPathways <- readRDS("../05.miscellaneous/msig_MitoPathways_geneid.Rds")
+#msig_MitoPathways <- readRDS("../05.miscellaneous/msig_MitoPathways_symbol.Rds")
+```
+
+```{r}
+
+
+msigdb_list <- list(
+  Hallmark = msigdb_HALLMARK,
+  GOBP = msigdb_GOBP,
+  GOMF = msigdb_GOMF,
+  GOCC = msigdb_GOCC,
+  MitoPathways = msig_MitoPathways
+)
+
+```
+
+## GSEA
+Gene set enrichment analysis
+About GSEA: https://www.gsea-msigdb.org/gsea/doc/GSEAUserGuideFrame.html
+Downloading GSEA-MSigDB (signatures): https://www.gsea-msigdb.org/gsea/msigdb/collections.jsp
+
+```{r}
+#one of
+#multipleComparisonMethod <- "holm"
+#multipleComparisonMethod <- "hochberg"
+#multipleComparisonMethod <- "hommel"
+#multipleComparisonMethod <- "bonferroni"
+multipleComparisonMethod <- "BH"
+#multipleComparisonMethod <- "BY"
+#multipleComparisonMethod <- "fdr"
+#multipleComparisonMethod <- "none"
+```
+
+### ALL
+```{r, warning=F}
+for (x in seq_along(contrasts_list)) {
+  group1 <- names(contrasts_list)[x] %>% str_extract(".*(?=_vs_)")
+  group2 <- names(contrasts_list)[x] %>% str_extract("(?<=_vs_).*")
+
+  contrast <- contrasts_list[[x]]
+  contrast_name <- names(contrasts_list)[x]
+  contrast <- contrast %>%
+    mutate(negative_log10pvalue = -log10(pvalue)) %>%
+    mutate(negative_log10pvalue = ifelse(
+      is.infinite(negative_log10pvalue),
+      1000, negative_log10pvalue
+    )) %>% ## change the inf to big numbers
+    dplyr::mutate(signed_rank_stats = sign(log2FoldChange) * negative_log10pvalue) %>%
+    #dplyr::mutate(signed_rank_stats = log2FoldChange * negative_log10pvalue) %>%
+    dplyr::mutate(signed_rank_stats = log2FoldChange) %>%
+    arrange(desc(signed_rank_stats))
+
+  #gene_list <- contrast$log2FoldChange
+  gene_list <- contrast$signed_rank_stats
+  names(gene_list) <- contrast$ensembl_gene_id
+
+  for (i in seq_along(msigdb_list)) {
+    collection_name <- names(msigdb_list)[i]
+    msig <- msigdb_list[[i]]
+    
+    set.seed(1234)
+    gsea <- GSEA(gene_list,
+      #exponent = 0,
+      #eps = 0,
+      seed = TRUE,
+      #maxGSSize = 1000, 
+      #pvalueCutoff = 0.05,
+      pvalueCutoff = 1,
+      pAdjustMethod = multipleComparisonMethod,
+      TERM2GENE = msig
+    )
+    
+    gsea_result <- gsea@result %>%
+      mutate(
+        comparison = contrast_name,
+        collection = collection_name
+      )
+    
+    filename <- paste0("pathways_GSEA_", collection_name, "_", contrast_name)
+
+    write_xlsx(gsea_result, paste0(
+      "../04.supplements/",
+      filename_prefix,
+      filename,
+      ".xlsx"
+    ))
+
+    saveRDS(gsea_result, paste0(
+      "../02.results/pathways/",
+      filename_prefix,
+      filename,
+      ".RDS"
+    ))
+    
+    saveRDS(gsea, paste0(
+      "../02.results/pathways/",
+      filename_prefix,
+      filename,
+      "_full.RDS"
+    ))
+  }
+}
+```
+
+
+## Over-representation analysis
+
+```{r}
+msigdb_list <- list(
+  Hallmark = msigdb_HALLMARK,
+  GOBP = msigdb_GOBP
+  # GOMF = msigdb_GOMF,
+  # GOCC = msigdb_GOCC,
+  # MitoPathways = msig_MitoPathways
+)
+
+```
+
+```{r}
+set.seed(1234)
+#one of
+#multipleComparisonMethod <- "holm"
+#multipleComparisonMethod <- "hochberg"
+#multipleComparisonMethod <- "hommel"
+#multipleComparisonMethod <- "bonferroni"
+multipleComparisonMethod <- "BH"
+#multipleComparisonMethod <- "BY"
+#multipleComparisonMethod <- "fdr"
+#multipleComparisonMethod <- "none"
+
+significance_threshold <- 0.05
+```
+
+```{r}
+pathways_df <- data.frame()
+
+for (x in seq_along(contrasts_list)) {
+  group1 <- names(contrasts_list)[x] %>% str_extract(".*(?=_vs_)")
+  group2 <- names(contrasts_list)[x] %>% str_extract("(?<=_vs_).*")
+
+  contrast <- contrasts_list[[x]]
+  contrast_name <- names(contrasts_list)[x]
+  
+  genes_up <- contrast %>%
+    filter(padj <= significance_threshold, log2FoldChange > 0) %>%
+    distinct(ensembl_gene_id) %>%
+    pull()
+
+  genes_down <- contrast %>%
+    filter(padj <= significance_threshold, log2FoldChange < 0) %>%
+    distinct(ensembl_gene_id) %>%
+    pull()
+
+  for (i in seq_along(msigdb_list)) {
+    collection_name <- names(msigdb_list)[i]
+    msig <- msigdb_list[[i]]
+
+    if (length(genes_up) > 10) {
+      up <- enricher(genes_up,
+        pAdjustMethod = multipleComparisonMethod,
+        pvalueCutoff = 0.05,
+        qvalueCutoff = 0.05,
+        universe = contrast$ensembl_gene_id,
+        TERM2GENE = msig
+      )
+      up_df <- up@result %>%
+        mutate(group = group1,
+               direction = "Increased",
+               comparison = contrast_name,
+               GeneRatio2 = Count / as.numeric(str_extract(GeneRatio, "(?<=/)[0-9]+")))
+    } else {
+      up_df <- data.frame() %>%
+        mutate(group = group1,
+               direction = "Increased",
+               comparison = contrast_name)
+    }
+    
+    if (length(genes_down) > 10) {
+      down <- enricher(genes_down,
+        pAdjustMethod = multipleComparisonMethod,
+        pvalueCutoff = 0.05,
+        qvalueCutoff = 0.05,
+        universe = contrast$ensembl_gene_id,
+        TERM2GENE = msig
+      )
+      down_df <- down@result %>%
+        mutate(group = group2,
+               comparison = contrast_name,
+               direction = "Decreased",
+               GeneRatio2 = Count / as.numeric(str_extract(GeneRatio, "(?<=/)[0-9]+"))) %>%
+        mutate()
+    } else {
+      down_df <- data.frame() %>%
+        mutate(group = group2,
+               direction = "Decreased",
+               comparison = contrast_name)
+    }
+      combined <- full_join(up_df, down_df) %>%
+        mutate(group = factor(group, levels = c(group1,group2)), 
+               collection = collection_name)
+      
+      pathways_df <- rbind(pathways_df, combined)
+
+    } 
+  }
+
+```
+
+No decreased MitoPathways, so let's run just upregulated genes separetely for this
+```{r}
+for (x in seq_along(contrasts_list)) {
+  group1 <- names(contrasts_list)[x] %>% str_extract(".*(?=_vs_)")
+  group2 <- names(contrasts_list)[x] %>% str_extract("(?<=_vs_).*")
+
+  contrast <- contrasts_list[[x]]
+  contrast_name <- names(contrasts_list)[x]
+  
+  genes_up <- contrast %>%
+    filter(padj <= significance_threshold, log2FoldChange > 0) %>%
+    distinct(ensembl_gene_id) %>%
+    pull()
+
+  genes_down <- contrast %>%
+    filter(padj <= significance_threshold, log2FoldChange < 0) %>%
+    distinct(ensembl_gene_id) %>%
+    pull()
+  
+  msig <- msig_MitoPathways
+  collection_name <- "MitoPathways"
+    
+  if (length(genes_up) > 10) {
+      up <- enricher(genes_up,
+        pAdjustMethod = multipleComparisonMethod,
+        pvalueCutoff = 0.05,
+        qvalueCutoff = 0.05,
+        universe = contrast$ensembl_gene_id,
+        TERM2GENE = msig
+      )
+      up_df <- up@result %>%
+        mutate(group = group1,
+               direction = "Increased",
+               comparison = contrast_name,
+               GeneRatio2 = Count / as.numeric(str_extract(GeneRatio, "(?<=/)[0-9]+")))
+    } else {
+      up_df <- data.frame() %>%
+        mutate(group = group1,
+               direction = "Increased",
+               comparison = contrast_name)
+    }
+    
+  if (length(genes_down) > 10) {
+      down <- enricher(genes_down,
+        pAdjustMethod = multipleComparisonMethod,
+        pvalueCutoff = 0.05,
+        qvalueCutoff = 0.05,
+        universe = contrast$ensembl_gene_id,
+        TERM2GENE = msig
+      )
+  combined <- up_df %>%
+        mutate(group = factor(group, levels = c(group1,group2)), 
+               collection = collection_name)
+      
+    pathways_df <- rbind(pathways_df, combined)
+
+    } 
+  
+  }
+```
+Save ORA dataframe
+```{r}
+filename <- "pathways_ORA"
+
+write_xlsx(pathways_df, paste0(
+  "../04.supplements/",
+  filename_prefix,
+  filename,
+  ".xlsx"
+))
+
+saveRDS(pathways_df, paste0(
+  "../02.results/pathways/",
+  filename_prefix,
+  filename,
+  ".RDS"
+))
+```
+
+
+
+# R session info
+```{r}
+utils:::print.sessionInfo(sessionInfo()[-8])
+```
+
+# References
+- Subramanian A, Tamayo P, Mootha VK, Mukherjee S, Ebert BL, Gillette MA, Paulovich A, Pomeroy SL, Golub TR, Lander ES, Mesirov JP. 2005. Gene set enrichment analysis: A knowledge-based approach for interpreting genome-wide expression profiles. Proceedings of the National Academy of Sciences 102:15545–15550. <a href="https://www.pnas.org/doi/10.1073/pnas.0506580102" target="_blank" rel="noopener">Link</a>
+
+- Mootha VK, Lindgren CM, Eriksson K-F, Subramanian A, Sihag S, Lehar J, Puigserver P, Carlsson E, Ridderstråle M, Laurila E, Houstis N, Daly MJ, Patterson N, Mesirov JP, Golub TR, Tamayo P, Spiegelman B, Lander ES, Hirschhorn JN, Altshuler D, Groop LC. 2003. PGC-1α-responsive genes involved in oxidative phosphorylation are coordinately downregulated in human diabetes. Nat Genet 34:267–273. <a href="https://www.nature.com/articles/ng1180" target="_blank" rel="noopener">Link</a>
+
+- T Wu, E Hu, S Xu, M Chen, P Guo, Z Dai, T Feng, L Zhou, W Tang, L Zhan, X Fu, S Liu, X Bo, and G Yu. clusterProfiler 4.0: A universal enrichment tool for interpreting omics data. The Innovation. 2021, 2(3):100141
+
+- Korotkevich G, Sukhov V, Budin N, Shpak B, Artyomov MN, Sergushichev A. 2021. Fast gene set enrichment analysis.<a href="https://doi.org/10.1101/060012" target="_blank" rel="noopener">Link</a>
+
+[Introduction to msigdbr](https://igordot.github.io/msigdbr/articles/msigdbr-intro.html)
+
+
+
+
+

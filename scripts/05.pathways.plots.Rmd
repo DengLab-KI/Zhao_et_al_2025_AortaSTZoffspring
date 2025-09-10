@@ -1,0 +1,693 @@
+---
+title: "Pathway analysis - Plots"
+subtitle: "Prime-seq analysis"
+author: "Data analysis: Paulo Jannig | Karolinska Institutet"
+date: "`r paste('Last update:', format(Sys.time(), '%B %d, %Y'))`"
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+    toc_depth: 3
+    number_sections: true
+    theme: spacelab
+    highlight: default
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+```{r}
+print(setwd(dirname(rstudioapi::getSourceEditorContext()$path)))
+```
+
+```{r}
+# define variables ==========================================
+filename_prefix <- "" # leave empty if not necessary
+species <- "mouse" # mouse, human, pig, rat
+ensembl_version <- 102 # define ensembl release version
+
+file_formats <- list(
+  #"png",
+  "pdf"
+)
+
+# load libraries
+required_Packages_Install <- c("tidyverse",
+                               "msigdbr",
+                               "clusterProfiler",
+                               "org.Mm.eg.db",
+                               "pheatmap",
+                               "ggtext",
+                               "RColorBrewer",
+                               "scico",
+                               "writexl",
+                               "ggrepel",
+                               "ggvenn",
+                               "viridis",
+                               "scales"
+                               )
+
+for(Package in required_Packages_Install){
+  if(!require(Package,character.only = TRUE)) { 
+    BiocManager::install(Package, dependencies=TRUE)
+  }
+  library(Package,character.only = TRUE)
+}
+
+# source custom functions
+source("load_functions.R") # source custom functions
+```
+
+# Import data
+
+Load pathways names replacements file
+```{r}
+pathways_replace <- read.delim(
+  file = paste0("../05.miscellaneous/pathways_names_replacements.txt"),
+  sep = "", header = T
+)
+replacements <- c(pathways_replace$replacement)
+names(replacements) <- c(pathways_replace$original)
+```
+
+## Metadata
+```{r}
+metadata <- readRDS("../01.metadata/metadata.Rds")
+colnames(metadata)
+metadata$Sample
+unique(metadata$Group)
+```
+
+## Hallmark
+# Contrasts
+```{r}
+group1 <- levels(metadata$Group)[2]
+group_ref <- levels(metadata$Group)[1]
+
+
+contrast1_name <- paste0(group1,"_vs_",group_ref)
+contrast1_name
+
+contrast1 <- readRDS(paste0("../02.results/pathways/pathways_GSEA_Hallmark_", contrast1_name, ".RDS"))
+# contrast2 <- readRDS(paste0("../02.results/pathways/pathways_GSEA_Hallmark_", group2,"_vs_",group_ref,".RDS"))
+
+
+contrasts <- set_names(
+  list(contrast1),
+  contrast1_name
+)
+
+# contrasts <- set_names(list(contrast1, contrast2),
+#                        paste0(group1,"_vs_",group_ref),
+#                        paste0(group2,"_vs_2",group_ref))
+```
+
+```{r}
+gsea <- contrast1 %>%
+  mutate(ID = stringr::str_replace_all(ID, "_", " ")) %>%
+  mutate(ID = tools::toTitleCase(tolower(ID))) %>%
+  mutate(ID = str_replace_all(ID, pattern = replacements)) %>%
+  mutate(ID = stringr::str_trim(ID)) 
+
+
+unique(gsea$comparison)
+
+gsea <- gsea %>%
+  mutate(comparison = factor(comparison, levels = c(
+    contrast1_name
+  )))
+```
+## bar plot
+```{r}
+pathway_data <- gsea %>%
+  filter(p.adjust < 0.05) %>%
+  arrange(desc(abs(NES))) %>%
+  mutate(pathway_rank = row_number()) %>%
+  mutate(rank_of = paste0(pathway_rank, "/", n())) %>%
+  dplyr::arrange(NES) %>%
+  mutate(ID = factor(ID, levels = ID)) # Reorder ID after arranging
+```
+
+```{r}
+pathway_data %>%
+  ggplot(aes(x = ID, y = NES)) +
+  geom_bar(stat = "identity", aes(fill = p.adjust), linewidth = 1) +
+  # geom_bar(stat = "identity", aes(fill = sign(NES)), linewidth = 1) +
+  gg_theme() +
+  theme(legend.position = "right") +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.3))) +
+  geom_text(aes(label = rank_of),
+    y = (round(
+      max(pathway_data[[deparse(substitute(NES))]])
+    ) * 1.5),
+    hjust = 1,
+    size = 5 / ggplot2:::.pt, color = "black"
+  ) +
+  labs(
+    fill = "FDR"
+  ) +
+  ggplot2::guides(
+    fill = guide_colourbar(
+      order = 1,
+      title.position = "right",
+      title.theme = ggtext::element_markdown(size = 6, angle = -90, hjust = 0.5),
+      label.position = "left"
+    )
+  ) +
+  coord_flip() +
+  scale_fill_viridis(
+    option = "D"
+    # "magma" (or "A")
+    # "inferno" (or "B")
+    # "plasma" (or "C")
+    # "viridis" (or "D")
+    # "cividis" (or "E")
+    # "rocket" (or "F")
+    # "mako" (or "G")
+    # "turbo" (or "H")
+  ) +
+  # scale_fill_gradient(low = "#1F78B4", high = "#E31A1C") +
+  ylab("Normalized Enrichment Score") +
+  xlab("") +
+  ggtitle(paste0("**GSEA Hallmark pathways** <br> ", contrast1_name, ", FDR<0.05"))
+```
+
+save plot
+```{r}
+filename <- "Hallmark_barplot_all"
+
+for (file_format in file_formats) {
+  ggsave_fixed(
+    paste0(
+      "../03.figures/",
+      filename_prefix,
+      "GSEA_",
+      filename, ".",
+      file_format
+    ),
+    units = "mm",
+    plot_width = 20,
+    plot_height = length(pathway_data) * 3,
+    width = 90,
+    height = length(pathway_data) * 3 + 20
+  )
+}
+```
+
+select pathways
+```{r}
+pathway_data %>%
+  dplyr::select(ID, NES, pathway_rank) %>%
+  arrange(pathway_rank) %>%
+  arrange(NES)
+```
+
+Top 10 GSEA Hallmark pathways
+```{r}
+selected_pathways <- c(1:10)
+
+pathway_data_selected <- pathway_data %>%
+  filter(pathway_rank %in% selected_pathways) %>%
+  dplyr::arrange(NES) %>%
+  mutate(ID = factor(ID, levels = ID)) # Reorder ID after arranging
+```
+
+```{r}
+pathway_data_selected %>%
+  ggplot(aes(x = ID, y = NES)) +
+  geom_bar(stat = "identity", aes(fill = p.adjust), linewidth = 1) +
+  # geom_bar(stat = "identity", aes(fill = sign(NES)), linewidth = 1) +
+  gg_theme() +
+  theme(legend.position = "right") +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.3))) +
+  geom_text(aes(label = rank_of),
+    y = (round(
+      max(pathway_data_selected[[deparse(substitute(NES))]])
+    ) * 1.3),
+    hjust = 1,
+    size = 5 / ggplot2:::.pt, color = "black"
+  ) +
+  labs(
+    fill = "FDR"
+  ) +
+  ggplot2::guides(
+    fill = guide_colourbar(
+      order = 1,
+      title.position = "right",
+      title.theme = ggtext::element_markdown(size = 6, angle = -90, hjust = 0.5),
+      label.position = "left"
+    )
+  ) +
+  coord_flip() +
+  scale_fill_viridis(
+    option = "D"
+    # "magma" (or "A")
+    # "inferno" (or "B")
+    # "plasma" (or "C")
+    # "viridis" (or "D")
+    # "cividis" (or "E")
+    # "rocket" (or "F")
+    # "mako" (or "G")
+    # "turbo" (or "H")
+  ) +
+  # scale_fill_gradient(low = "#1F78B4", high = "#E31A1C") +
+  ylab("Normalized Enrichment Score") +
+  xlab("") +
+  ggtitle(paste0("**Top 10 GSEA Hallmark pathways** <br> ", contrast1_name, ", FDR<0.05"))
+```
+
+
+
+save plot
+```{r}
+filename <- "Hallmark_barplot_selected"
+
+for (file_format in file_formats) {
+  ggsave_fixed(
+    paste0(
+      "../03.figures/",
+      filename_prefix,
+      "GSEA_",
+      filename, ".",
+      file_format
+    ),
+    units = "mm",
+    plot_width = 20,
+    plot_height = length(pathway_data_selected) * 2,
+    width = 75,
+    height = length(pathway_data_selected) * 2 + 20
+  )
+}
+```
+
+## GSEA plot
+
+```{r}
+# gsea1_full <- readRDS("../01_results/pathways/pathways_GSEA_Hallmark_CF_vs_CL_full.RDS")
+gsea1_full <- readRDS(paste0("../02.results/pathways/pathways_GSEA_Hallmark_", contrast1_name, "_full.RDS"))
+```
+
+
+### visualization 
+```{r}
+gsea1_full$Description
+```
+
+Selecting
+-  [1] "HALLMARK_OXIDATIVE_PHOSPHORYLATION" 
+- [15] "HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY"  
+
+```{r}
+enrichplot::gseaplot2(gsea1_full, geneSetID = c(1,15))
+```
+
+```{r}
+enrichplot::gseaplot(gsea1_full, geneSetID = 1, by = "preranked") + gg_theme()
+```
+```{r}
+enrichplot::gseaplot2(gsea1_full, geneSetID = c(1,15), subplots = 1:3,
+                      color = c("#D95F02", "#1B9E77"))# + gg_theme()
+
+```
+
+
+```{r}
+enrichplot::gseaplot2(gsea1_full, geneSetID = c(1,15), subplots = 1,
+                      #pvalue_table = TRUE,
+                      color = c("#D95F02", "#1B9E77")) + 
+  gg_theme() + 
+  theme(
+  axis.text.x = element_blank(),  # Remove x-axis text
+  axis.ticks.x = element_blank()   # Remove x-axis ticks
+  )
+```
+
+save plot
+```{r}
+filename <- paste0("GSEAplot_Oxphox_ROS_line")
+
+for (file_format in file_formats) {
+  ggsave_fixed(
+    paste0(
+      "../03.figures/",
+      filename_prefix,
+      filename, ".",
+      file_format
+    ),
+    units = "mm",
+    plot_width = 40,
+    plot_height = 15,
+    width = 100,
+    height = 60
+  )
+}
+```
+
+```{r}
+enrichplot::gseaplot2(gsea1_full,
+  geneSetID = c(1, 15), subplots = 2,
+  color = c("#D95F02", "#1B9E77")
+) +
+  gg_theme() +
+  theme(
+    axis.text.x = element_blank(), # Remove x-axis text
+    axis.ticks.x = element_blank(), # Remove x-axis ticks
+    axis.text.y = element_blank(), # Remove y-axis text
+    axis.ticks.y = element_blank() # Remove y-axis ticks
+  ) 
+
+```
+
+save plot
+```{r}
+filename <- paste0("GSEAplot_Oxphox_ROS_genes")
+
+for (file_format in file_formats) {
+  ggsave_fixed(
+    paste0(
+      "../03.figures/",
+      filename_prefix,
+      filename, ".",
+      file_format
+    ),
+    units = "mm",
+    plot_width = 40,
+    plot_height = 5,
+    width = 45,
+    height = 10
+  )
+}
+```
+
+```{r}
+enrichplot::gseaplot2(gsea1_full, geneSetID = c(1,15), subplots = 3,
+                      color = c("#D95F02", "#1B9E77")) + 
+  gg_theme() + 
+  scale_y_continuous(
+    limits = c(-2,2),
+    breaks = seq(-2, 2, by = 1))  # Sets y-axis breaks every 10 units
+```
+
+save plot
+```{r}
+filename <- paste0("GSEAplot_Oxphox_ROS_rank")
+
+for (file_format in file_formats) {
+  ggsave_fixed(
+    paste0(
+      "../03.figures/",
+      filename_prefix,
+      filename, ".",
+      file_format
+    ),
+    units = "mm",
+    plot_width = 40,
+    plot_height = 10,
+    width = 100,
+    height = 60
+  )
+}
+```
+
+# ORA
+# Contrasts
+```{r}
+
+group1 <- levels(metadata$Group)[2]
+# group2 <- levels(metadata$group)[3]
+group_ref <- levels(metadata$Group)[1]
+
+
+#contrast1 <- paste0(group,"_vs_",group_ref)
+contrast1_name <- paste0(group1,"_vs_",group_ref)
+contrast1_name
+
+# gsea1_full <- readRDS("../01_results/pathways/pathways_GSEA_Hallmark_CF_vs_CL_full.RDS")
+pathways_ORA <- readRDS(paste0("../02.results/pathways/pathways_ORA.RDS"))
+# contrast2 <- readRDS(paste0("../02.results/pathways/pathways_GSEA_Hallmark_", group2,"_vs_",group_ref,".RDS"))
+
+```
+
+```{r}
+pathways_ORA <- pathways_ORA %>%
+  #full_join(contrast1) %>%
+  #full_join(contrast3) %>%
+  #mutate(ID = stringr::str_replace(ID, "HALLMARK_", "")) %>%
+  mutate(ID = stringr::str_replace_all(ID, "_", " ")) %>%
+  mutate(ID = tools::toTitleCase(tolower(ID))) %>%
+  mutate(ID = str_replace_all(ID, pattern = replacements)) %>%
+  mutate(ID = stringr::str_trim(ID)) 
+
+
+unique(pathways_ORA$comparison)
+
+pathways_ORA <- pathways_ORA %>%
+  mutate(comparison = factor(comparison, levels = c(
+    contrast1_name
+  )))
+levels(pathways_ORA$comparison)
+colnames(pathways_ORA)
+```
+
+## Data tyding
+
+```{r}
+colnames(pathways_ORA)
+unique(pathways_ORA$direction)
+unique(pathways_ORA$collection)
+```
+
+```{r}
+pathways_ORA <- pathways_ORA %>%
+  mutate(log10_padj = -log10(p.adjust)) %>%
+    mutate(direction = factor(direction, levels = c(
+           "Increased",
+           "Decreased"
+           )
+           )
+         )
+colnames(pathways_ORA)
+```
+
+
+```{r}
+selected_collection <- "GOBP"
+```
+
+
+```{r}
+combined <- pathways_ORA %>%
+  arrange(group, p.adjust) %>%
+  filter(p.adjust < 0.05,
+         collection %in% selected_collection) %>%
+  #dplyr::filter(direction == "Increased") %>%
+  group_by(group) %>%
+  slice_head(n = 5) 
+
+```
+
+Both
+```{r}
+ggplot(combined, aes(
+    x = GeneRatio2,
+    y = fct_reorder(ID, GeneRatio2),
+    colour = rev(p.adjust),
+    size = Count,
+  )) +
+  geom_point() +
+  # scale_x_discrete(position = "top") +
+  gg_theme() +
+  theme(
+    legend.position = "right",
+    panel.spacing.y = unit(1, "mm"),
+    strip.text = element_text(face = "plain"),
+    axis.text.x = ggtext::element_markdown(size = 5, colour = "black", angle = 45, hjust = 1)
+  ) +
+  xlab("GeneRatio") +
+  ylab("") +
+  scale_color_viridis_c(
+    option = "viridis",
+    labels = scales::scientific_format(scale = 1, digits = 2),
+    #breaks = c(1e-05, 1e-04, 1e-03, 1e-02),
+    breaks = scales::pretty_breaks(n = 5),  # Setting number of breaks
+    # limits = c(-2, 2),
+    #oob = scales::squish
+  ) +
+  labs(
+    colour = "FDR",
+    size = "Count"
+  ) +
+  ggplot2::guides(
+    colour = guide_colourbar(
+      order = 1,
+      title.position = "right",
+      title.theme = ggtext::element_markdown(size = 5, angle = -90, hjust = 0.5),
+      label.position = "left"
+    ),
+    size = guide_legend(
+      order = 2,
+      title.position = "right",
+      title.theme = ggtext::element_markdown(size = 5, angle = -90, hjust = 0.5),
+      label.position = "left"
+    )
+  ) +
+  scale_size(range = c(1, 3), ) +
+  expand_limits(
+    x = c(0, max(combined$GeneRatio2) * 1.1),
+    y = c(0, max(as.numeric(as.character(combined$ID))) * 1.1)
+  ) +
+  facet_grid(rows = vars(direction), scales = "free_y", space = "free_y") +
+  #facet_grid(group ~ ., scales = "free_y") +
+  ggtitle(paste0("**Top 5 ", selected_collection, " Pathways**<br> FDR<0.05"))
+
+```
+save plot
+```{r}
+filename <- paste0("ORA_",selected_collection,"_both")
+
+for (file_format in file_formats) {
+  ggsave_fixed(
+    paste0(
+      "../03.figures/",
+      filename_prefix,
+      filename, ".",
+      file_format
+    ),
+    units = "mm",
+    plot_width = 15,
+    plot_height = c(20,12),
+    width = 100,
+    height = 60
+  )
+}
+```
+
+
+Top 10 MitoPathways
+
+```{r}
+selected_collection <- "MitoPathways"
+```
+
+
+```{r}
+combined <- pathways_ORA %>%
+  arrange(group, p.adjust) %>%
+  filter(p.adjust < 0.05,
+         collection %in% selected_collection) %>%
+  #dplyr::filter(direction == "Increased") %>%
+  group_by(group) 
+
+combined$ID
+
+```
+```{r}
+selected_pathways <- c(2,4,5,8,7,10,14,11,12,13)
+
+combined_filtered <- combined[selected_pathways,]
+```
+
+
+plot
+```{r}
+ggplot(combined_filtered, aes(
+    x = Count,
+    y = fct_reorder(ID, GeneRatio2),
+    fill = p.adjust
+  )) +
+  # geom_point() +
+  geom_bar(stat = "identity") +
+  # scale_x_discrete(position = "top") +
+  gg_theme() +
+  theme(
+    legend.position = "right",
+    panel.spacing.y = unit(1, "mm"),
+    strip.text = element_text(face = "plain"),
+    axis.text.x = ggtext::element_markdown(size = 5, colour = "black", angle = 45, hjust = 1)
+  ) +
+  xlab("GeneRatio") +
+  ylab("") +
+  scale_fill_viridis_c(
+    option = "viridis",
+    labels = scales::scientific_format(scale = 1, digits = 2),
+    #breaks = c(1e-05, 1e-04, 1e-03, 1e-02),
+    breaks = scales::pretty_breaks(n = 5),  # Setting number of breaks
+    # limits = c(-2, 2),
+    #oob = scales::squish
+  ) +
+  labs(
+    fill = "FDR",
+    #size = "Count"
+  ) +
+  ggplot2::guides(
+    colour = guide_colourbar(
+      order = 1,
+      title.position = "right",
+      title.theme = ggtext::element_markdown(size = 5, angle = -90, hjust = 0.5),
+      label.position = "left"
+    ),
+    size = guide_legend(
+      order = 2,
+      title.position = "right",
+      title.theme = ggtext::element_markdown(size = 5, angle = -90, hjust = 0.5),
+      label.position = "left"
+    )
+  ) +
+  scale_size(range = c(1, 3), ) +
+  expand_limits(
+    x = c(0, max(combined$GeneRatio2) * 1.1),
+    y = c(0, max(as.numeric(as.character(combined$ID))) * 1.1)
+  ) +
+  #facet_grid(rows = vars(direction), scales = "free_y", space = "free_y") +
+  #facet_grid(group ~ ., scales = "free_y") +
+  ggtitle(paste0("**Top 5 ", selected_collection, " Pathways**<br> FDR<0.05"))
+
+```
+save plot
+```{r}
+filename <- paste0("ORA_",selected_collection)
+
+for (file_format in file_formats) {
+  ggsave_fixed(
+    paste0(
+      "../03.figures/",
+      filename_prefix,
+      filename, ".",
+      file_format
+    ),
+    units = "mm",
+    plot_width = 15,
+    plot_height = 30,
+    width = 60,
+    height = 50
+  )
+}
+```
+
+
+# R session info
+```{r}
+utils:::print.sessionInfo(sessionInfo()[-8])
+```
+
+# References
+- Subramanian A, Tamayo P, Mootha VK, Mukherjee S, Ebert BL, Gillette MA, Paulovich A, Pomeroy SL, Golub TR, Lander ES, Mesirov JP. 2005. Gene set enrichment analysis: A knowledge-based approach for interpreting genome-wide expression profiles. Proceedings of the National Academy of Sciences 102:15545–15550. <a href="https://www.pnas.org/doi/10.1073/pnas.0506580102" target="_blank" rel="noopener">Link</a>
+
+- Mootha VK, Lindgren CM, Eriksson K-F, Subramanian A, Sihag S, Lehar J, Puigserver P, Carlsson E, Ridderstråle M, Laurila E, Houstis N, Daly MJ, Patterson N, Mesirov JP, Golub TR, Tamayo P, Spiegelman B, Lander ES, Hirschhorn JN, Altshuler D, Groop LC. 2003. PGC-1α-responsive genes involved in oxidative phosphorylation are coordinately downregulated in human diabetes. Nat Genet 34:267–273. <a href="https://www.nature.com/articles/ng1180" target="_blank" rel="noopener">Link</a>
+
+- T Wu, E Hu, S Xu, M Chen, P Guo, Z Dai, T Feng, L Zhou, W Tang, L Zhan, X Fu, S Liu, X Bo, and G Yu. clusterProfiler 4.0: A universal enrichment tool for interpreting omics data. The Innovation. 2021, 2(3):100141
+
+
+[Introduction to msigdbr](https://igordot.github.io/msigdbr/articles/msigdbr-intro.html)
+
+
+
+
